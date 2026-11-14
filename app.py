@@ -166,8 +166,8 @@ with tab1:
         st.subheader("Automated Optical Feature & Grade Analysis")
         feats, clean_mask, spec_mask, spec_pct = extract_optical_features(bgr_image)
         input_df = pd.DataFrame([feats])[feature_names]
-        pred_class = str(model.predict(input_df))
-        pred_probs = model.predict_proba(input_df)
+        pred_class = str(model.predict(input_df)[0])
+        pred_probs = model.predict_proba(input_df)[0]
         confidence = float(np.max(pred_probs)) * 100.0
 
         low_conf_review = confidence < min_conf_req
