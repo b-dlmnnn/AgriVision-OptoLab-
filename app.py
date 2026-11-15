@@ -136,9 +136,13 @@ def train_quality_model():
     cm = confusion_matrix(y_test, y_pred, labels=classes)
     return clf, accuracy_score(y_test, y_pred), df.columns.tolist(), cm, classes
 
-model, model_acc, feature_names, conf_mat, class_labels = train_quality_model()
-tab1, tab2, tab3 = st.tabs(["🔬 1. Optical Produce Quality Inspection", "📡 2. IoT & Biological Sensor Telemetry", "📊 3. Model Validation & Confusion Matrix"])
-
+ model, model_acc, feature_names, conf_mat, class_labels = train_quality_model()tab1, tab2, tab3 = st.tabs(["🔬 1. Optical Produce Quality Inspection", "📡 2. IoT & Biological Sensor Telemetry", "📊 3. Model Validation & Confusion Matrix"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔬 1. Optical Produce Quality Inspection",
+    "📡 2. IoT & Biological Sensor Telemetry",
+    "📊 3. Model Validation & Confusion Matrix",
+    "🧬 4. Nucleic Acid Assay (LAMP/RPA)"
+])
 with tab1:
     col_left, col_right = st.columns([1, 1.35])
     with col_left:
@@ -244,3 +248,5 @@ with tab3:
         fig_cm = px.imshow(conf_mat, text_auto=True, x=class_labels, y=class_labels, color_continuous_scale="Greens", title="Hold-Out Validation Confusion Matrix")
         fig_cm.update_layout(height=420, xaxis_title="Predicted Grade", yaxis_title="True Grade")
         st.plotly_chart(fig_cm, use_container_width=True)
+with tab4:
+    render_nucleic_acid_tab()

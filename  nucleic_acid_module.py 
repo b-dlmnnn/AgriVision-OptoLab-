@@ -1,0 +1,192 @@
+import streamlit as st
+import cv2
+import numpy as np
+
+def generate_synthetic_tube(assay_type, sample_state, illumination_shift, noise_sigma, seed=42):
+    """LAMP (Kolorimetrik) veya RPA (Floresan) deney tüpü görüntüsü simüle eder."""
+    np.random.seed(seed)
+    img = np.zeros((320, 320, 3), dtype=np.uint8)
+    
+    # Arka plan rengi (Floresan için karanlık oda, Kolorimetrik için aydınlık laboratuvar)
+    if "Floresan" in assay_type:
+    from nucleic_acid_module import render_nucleic_acid_tab
+        img[:] = (18, 22, 28)  # Koyu arka plan (BGR)
+    else:
+        img[:] = (225, 228, 232)  # Açık gri arka plan (BGR)
+
+    # Tüp içi sıvı rengini belirleme (BGR formatında)
+    if "Kolorimetrik" in assay_type:
+        if sample_state == "Pozitif (Target Detected)":
+            liquid_color = (30, 195, 245)   # Sarı / Turuncu (Phenol Red Pozitif)
+        elif sample_state == "Negatif (No Target)":
+            liquid_color = (115, 45, 195)   # Pembe / Mor (Phenol Red Negatif)
+        else:
+            liquid_color = (75, 125, 225)   # Ara ton (Belirsiz / Düşük konsantrasyon)
+    else:  # Floresan RPA Modu (SYBR Green / FAM)
+        if sample_state == "Pozitif (Target Detected)":
+            liquid_color = (65, 235, 50)    # Parlak Yeşil Floresan
+        elif sample_state == "Negatif (No Target)":
+            liquid_color = (35, 65, 35)     # Sönük Arka Plan Floresanı
+        else:
+            liquid_color = (50, 145, 45)    # Zayıf Floresan Sinyali
+
+    # Deney tüpü geometrisi (Gövde + Yuvarlak Taban)
+    cv2.rectangle(img, (115, 60), (205, 220), liquid_color, -1)
+    cv2.circle(img, (160, 220), 45, liquid_color, -1)
+    
+    # Tüp dış çerçevesi (Cam kenarlığı)
+    border_color = (90, 95, 100) if "Floresan" in assay_type else (150, 155, 160)
+    cv2.rectangle(img, (115, 50), (205, 220), border_color, 2)
+    cv2.ellipse(img, (160, 220), (45, 45), 0, 0, 180, border_color, 2)
+
+    # Sıvı menisküsü ve tüp üzeri aynasal parlama (Specular Glare) ekleme
+    cv2.ellipse(img, (160, 60), (45, 8), 0, 0, 360, (255, 255, 255), -1)
+    cv2.ellipse(img, (133, 145), (6, 48), 0, 0, 360, (255, 255, 255), -1)
+
+    # Ortam ışığı kayması (Illumination Shift) uygulama
+    img = np.clip(img.astype(np.int16) + illumination_shift, 0, 255).astype(np.uint8)
+
+    # Optik sensör gürültüsü (Gaussian Noise) ekleme
+    if noise_sigma > 0:
+        noise = np.random.normal(0, noise_sigma, img.shape)
+        img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+
+    return img
+
+def analyze_tube_image(img_bgr, assay_type, confidence_gate):
+    """Parlamayı filtreler, renk/floresan sinyallerini çıkarır ve karar üretir."""
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    h, s, v = cv2.split(hsv)
+    l_chan, a_chan, b_chan = cv2.split(lab)
+
+    # 1. Parlama Maskesi (V > 220 ve S < 45)
+    glare_mask = ((v > 220) & (s < 45)).astype(np.uint8) * 255
+
+    # 2. Aktif Tüp Sıvısı Bölgesi (ROI) Maskesi
+    roi_mask = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
+    cv2.rectangle(roi_mask, (118, 65), (202, 220), 255, -1)
+    cv2.circle(roi_mask, (160, 220), 42, 255, -1)
+
+    # Parlamayı aktif analiz alanından çıkarma
+    active_mask = cv2.bitwise_and(roi_mask, cv2.bitwise_not(glare_mask))
+    valid_pixels = active_mask > 0
+
+    if np.sum(valid_pixels) == 0:
+        return None
+
+    # Metrik hesaplamaları
+    glare_ratio = (np.sum((glare_mask > 0) & (roi_mask > 0)) / np.sum(roi_mask > 0)) * 100
+    mean_hue = float(np.mean(h[valid_pixels]))
+    mean_a = float(np.mean(a_chan[valid_pixels])) - 128.0  # CIELAB a* (Yeşil <-> Kırmızı)
+    mean_b = float(np.mean(b_chan[valid_pixels])) - 128.0  # CIELAB b* (Mavi <-> Sarı)
+    green_intensity = float(np.mean(img_bgr[:, :, 1][valid_pixels]))
+
+    # Karar ve Güven Skoru Hesaplama
+    if "Kolorimetrik" in assay_type:
+        # Sarı tonlar yüksek b* ve düşük a* değerine sahiptir
+        score = np.clip((mean_b + 20) / 70.0, 0.0, 1.0)
+        if score >= 0.65:
+            raw_decision = "POZİTİF (Target Detected)"
+            confidence = 75.0 + (score - 0.65) * 70.0
+        elif score <= 0.35:
+            raw_decision = "NEGATİF (No Target)"
+            confidence = 75.0 + (0.35 - score) * 70.0
+        else:
+            raw_decision = "BELİRSİZ (Inconclusive)"
+            confidence = 55.0 + abs(score - 0.5) * 40.0
+    else:
+        # Floresan modunda yeşil kanal yoğunluğu belirleyicidir
+        score = np.clip((green_intensity - 55.0) / 160.0, 0.0, 1.0)
+        if score >= 0.60:
+            raw_decision = "POZİTİF (Target Detected)"
+            confidence = 78.0 + (score - 0.60) * 55.0
+        elif score <= 0.30:
+            raw_decision = "NEGATİF (No Target)"
+            confidence = 78.0 + (0.30 - score) * 55.0
+        else:
+            raw_decision = "BELİRSİZ (Inconclusive)"
+            confidence = 58.0 + abs(score - 0.45) * 40.0
+
+    confidence = min(99.4, round(confidence, 1))
+
+    # Human-in-the-Loop Güven Eşiği Kontrolü
+    if confidence < confidence_gate or "BELİRSİZ" in raw_decision:
+        final_status = "INCONCLUSIVE — Human-in-the-Loop Review Required"
+        status_type = "warning"
+    elif "POZİTİF" in raw_decision:
+        final_status = f"PASS: {raw_decision}"
+        status_type = "error"  # Patojen/Hedef tespit edildiği için dikkat çekici vurgu
+    else:
+        final_status = f"PASS: {raw_decision}"
+        status_type = "success"
+
+    return {
+        "active_mask": active_mask,
+        "glare_mask": glare_mask,
+        "glare_ratio": round(glare_ratio, 2),
+        "mean_hue": round(mean_hue, 2),
+        "mean_a": round(mean_a, 2),
+        "mean_b": round(mean_b, 2),
+        "green_intensity": round(green_intensity, 1),
+        "confidence": confidence,
+        "final_status": final_status,
+        "status_type": status_type,
+        "est_concentration": round(score * 10**4, 1)  # Tahmini kopya/µL simülasyonu
+    }
+
+def render_nucleic_acid_tab():
+    st.subheader("🧬 Portable Nucleic Acid Assay Analyzer (LAMP / RPA)")
+    
+    col_ctrl, col_img, col_res = st.columns([1.1, 1.2, 1.5])
+
+    with col_ctrl:
+        st.markdown("#### Assay & Optical Controls")
+        assay_type = st.radio(
+            "Reaksiyon Modu Seçimi",
+            ["Kolorimetrik LAMP (Phenol Red)", "Floresan RPA (SYBR Green / FAM)"]
+        )
+        sample_state = st.selectbox(
+            "Simüle Edilen Örnek Durumu",
+            ["Pozitif (Target Detected)", "Negatif (No Target)", "Sınırda / Düşük Konsantrasyon"]
+        )
+        conf_gate = st.slider("Human-in-the-Loop Confidence Gate (%)", 50, 95, 75)
+        illum_shift = st.slider("Chamber Illumination Shift (Brightness)", -60, 60, 0)
+        noise_sigma = st.slider("Optical Sensor Noise (Sigma)", 0, 25, 4)
+
+    img_bgr = generate_synthetic_tube(assay_type, sample_state, illum_shift, noise_sigma)
+    results = analyze_tube_image(img_bgr, assay_type, conf_gate)
+
+    with col_img:
+        st.markdown("#### Optical Tube Capture")
+        st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), caption="Simulated Assay Tube", use_container_width=True)
+        
+        m1, m2 = st.columns(2)
+        with m1:
+            st.image(results["active_mask"], caption="Active Liquid Mask", use_container_width=True)
+        with m2:
+            st.image(results["glare_mask"], caption="Glare Map (V>220, S<45)", use_container_width=True)
+
+    with col_res:
+        st.markdown("#### Quantitative Signal & Decision")
+        if results["status_type"] == "success":
+            st.success(f"**Decision:** {results['final_status']} | **Confidence:** {results['confidence']}%")
+        elif results["status_type"] == "warning":
+            st.warning(f"**Decision:** {results['final_status']} | **Confidence:** {results['confidence']}%")
+        else:
+            st.error(f"**Decision:** {results['final_status']} | **Confidence:** {results['confidence']}%")
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Circular Hue", f"{results['mean_hue']}°", "Scale: 0-179")
+        k2.metric("CIELAB b* (Yellow)", f"{results['mean_b']}", f"a*: {results['mean_a']}")
+        k3.metric("Specular Glare", f"{results['glare_ratio']}%", "Filtered Out")
+
+        k4, k5 = st.columns(2)
+        k4.metric("Fluorescence (G-Ch)", f"{results['green_intensity']} AU")
+        k5.metric("Est. Target Load", f"{results['est_concentration']} cp/µL")
+
+        st.info(
+            "**Opto-Lab Robustness Note:** Tüp üzerindeki menisküs ve cam yansımaları "
+            "`V>220, S<45` maskesiyle otomatik dışarıda bırakılmış, kalan sıvı pikselleri üzerinden "
+            "spektral ve floresan yoğunluk kalibrasyonu yapılmıştır."
+        )
