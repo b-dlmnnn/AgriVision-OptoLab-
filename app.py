@@ -137,13 +137,11 @@ def train_quality_model():
     y_pred = clf.predict(X_test) 
     cm = confusion_matrix(y_test, y_pred, labels=classes)
     return clf, accuracy_score(y_test, y_pred), df.columns.tolist(), cm, classes
-model, model_acc, feature_names, conf_mat, class_labels = train_quality_model()
-
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab4, tab2, tab3 = st.tabs([
     "🔬 1. Optical Produce Quality Inspection",
-    "📡 2. IoT & Biological Sensor Telemetry",
-    "📊 3. Model Validation & Confusion Matrix",
-    "🧬 4. Nucleic Acid Assay (LAMP/RPA)"
+    "🧬 2. Nucleic Acid Assay (LAMP/RPA)",
+    "📡 3. IoT & Biological Sensor Telemetry",
+    "📊 4. Model Validation & Confusion Matrix"
 ])
 
 with tab1:

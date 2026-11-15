@@ -5,29 +5,29 @@ import numpy as np
 def generate_synthetic_tube(assay_type, sample_state, illumination_shift, noise_sigma, seed=42):
     np.random.seed(seed)
     img = np.zeros((320, 320, 3), dtype=np.uint8)
-    if "Floresan" in assay_type:
+    if "Fluorescent" in assay_type:
         img[:] = (18, 22, 28)
     else:
         img[:] = (225, 228, 232)
 
-    if "Kolorimetrik" in assay_type:
-        if sample_state == "Pozitif (Target Detected)":
+    if "Colorimetric" in assay_type:
+        if sample_state == "Positive (Target Detected)":
             liquid_color = (30, 195, 245)
-        elif sample_state == "Negatif (No Target)":
+        elif sample_state == "Negative (No Target)":
             liquid_color = (115, 45, 195)
         else:
             liquid_color = (75, 125, 225)
     else:
-        if sample_state == "Pozitif (Target Detected)":
+        if sample_state == "Positive (Target Detected)":
             liquid_color = (65, 235, 50)
-        elif sample_state == "Negatif (No Target)":
+        elif sample_state == "Negative (No Target)":
             liquid_color = (35, 65, 35)
         else:
             liquid_color = (50, 145, 45)
 
     cv2.rectangle(img, (115, 60), (205, 220), liquid_color, -1)
     cv2.circle(img, (160, 220), 45, liquid_color, -1)
-    border_color = (90, 95, 100) if "Floresan" in assay_type else (150, 155, 160)
+    border_color = (90, 95, 100) if "Fluorescent" in assay_type else (150, 155, 160)
     cv2.rectangle(img, (115, 50), (205, 220), border_color, 2)
     cv2.ellipse(img, (160, 220), (45, 45), 0, 0, 180, border_color, 2)
     cv2.ellipse(img, (160, 60), (45, 8), 0, 0, 360, (255, 255, 255), -1)
@@ -61,36 +61,36 @@ def analyze_tube_image(img_bgr, assay_type, confidence_gate):
     mean_b = float(np.mean(b_chan[valid_pixels])) - 128.0
     green_intensity = float(np.mean(img_bgr[:, :, 1][valid_pixels]))
 
-    if "Kolorimetrik" in assay_type:
+    if "Colorimetric" in assay_type:
         score = np.clip((mean_b + 20) / 70.0, 0.0, 1.0)
         if score >= 0.65:
-            raw_decision = "POZİTİF (Target Detected)"
+            raw_decision = "POSITIVE (Target Detected)"
             confidence = 75.0 + (score - 0.65) * 70.0
         elif score <= 0.35:
-            raw_decision = "NEGATİF (No Target)"
+            raw_decision = "NEGATIVE (No Target)"
             confidence = 75.0 + (0.35 - score) * 70.0
         else:
-            raw_decision = "BELİRSİZ (Inconclusive)"
+            raw_decision = "INCONCLUSIVE (Low Signal)"
             confidence = 55.0 + abs(score - 0.5) * 40.0
     else:
         score = np.clip((green_intensity - 55.0) / 160.0, 0.0, 1.0)
         if score >= 0.60:
-            raw_decision = "POZİTİF (Target Detected)"
+            raw_decision = "POSITIVE (Target Detected)"
             confidence = 78.0 + (score - 0.60) * 55.0
         elif score <= 0.30:
-            raw_decision = "NEGATİF (No Target)"
+            raw_decision = "NEGATIVE (No Target)"
             confidence = 78.0 + (0.30 - score) * 55.0
         else:
-            raw_decision = "BELİRSİZ (Inconclusive)"
+            raw_decision = "INCONCLUSIVE (Low Signal)"
             confidence = 58.0 + abs(score - 0.45) * 40.0
 
     confidence = min(99.4, round(confidence, 1))
 
-    if confidence < confidence_gate or "BELİRSİZ" in raw_decision:
+    if confidence < confidence_gate or "INCONCLUSIVE" in raw_decision:
         final_status = "INCONCLUSIVE — Human-in-the-Loop Review Required"
         status_type = "warning"
-    elif "POZİTİF" in raw_decision:
-        final_status = f"PASS: {raw_decision}"
+    elif "POSITIVE" in raw_decision:
+        final_status = f"ALERT: {raw_decision}"
         status_type = "error"
     else:
         final_status = f"PASS: {raw_decision}"
@@ -117,12 +117,12 @@ def render_nucleic_acid_tab():
     with col_ctrl:
         st.markdown("#### Assay & Optical Controls")
         assay_type = st.radio(
-            "Reaksiyon Modu Seçimi",
-            ["Kolorimetrik LAMP (Phenol Red)", "Floresan RPA (SYBR Green / FAM)"]
+            "Select Assay Detection Mode",
+            ["Colorimetric LAMP (Phenol Red)", "Fluorescent RPA (SYBR Green / FAM)"]
         )
         sample_state = st.selectbox(
-            "Simüle Edilen Örnek Durumu",
-            ["Pozitif (Target Detected)", "Negatif (No Target)", "Sınırda / Düşük Konsantrasyon"]
+            "Simulated Sample Condition",
+            ["Positive (Target Detected)", "Negative (No Target)", "Borderline / Low Concentration"]
         )
         conf_gate = st.slider("Human-in-the-Loop Confidence Gate (%)", 50, 95, 75)
         illum_shift = st.slider("Chamber Illumination Shift (Brightness)", -60, 60, 0)
@@ -159,7 +159,7 @@ def render_nucleic_acid_tab():
         k5.metric("Est. Target Load", f"{results['est_concentration']} cp/µL")
 
         st.info(
-            "**Opto-Lab Robustness Note:** Tüp üzerindeki menisküs ve cam yansımaları "
-            "`V>220, S<45` maskesiyle otomatik dışarıda bırakılmış, kalan sıvı pikselleri üzerinden "
-            "spektral ve floresan yoğunluk kalibrasyonu yapılmıştır."
+            "**Opto-Lab Robustness Note:** Meniscus and tube specular reflections are automatically "
+            "masked out via `V>220, S<45` thresholding, ensuring reliable spectral and fluorescence "
+            "quantification from the remaining liquid region of interest."
         )
