@@ -9,6 +9,7 @@ from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix
+from nucleic_acid_module import render_nucleic_acid_tab
 
 st.set_page_config(page_title="AgriVision OptoLab | Smart Agriculture Quality & IoT", page_icon="🌱", layout="wide")
 
@@ -132,17 +133,19 @@ def train_quality_model():
     df = pd.DataFrame(rows)
     X_train, X_test, y_train, y_test = train_test_split(df, labels, test_size=0.25, random_state=42, stratify=labels)
     clf = RandomForestClassifier(n_estimators=100, max_depth=6, min_samples_leaf=2, random_state=42).fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
+    clf.fit(X_train, y_train)
+    y_pred = clf.predict(X_test) 
     cm = confusion_matrix(y_test, y_pred, labels=classes)
     return clf, accuracy_score(y_test, y_pred), df.columns.tolist(), cm, classes
+model, model_acc, feature_names, conf_mat, class_labels = train_quality_model()
 
- model, model_acc, feature_names, conf_mat, class_labels = train_quality_model()tab1, tab2, tab3 = st.tabs(["🔬 1. Optical Produce Quality Inspection", "📡 2. IoT & Biological Sensor Telemetry", "📊 3. Model Validation & Confusion Matrix"])
 tab1, tab2, tab3, tab4 = st.tabs([
     "🔬 1. Optical Produce Quality Inspection",
     "📡 2. IoT & Biological Sensor Telemetry",
     "📊 3. Model Validation & Confusion Matrix",
     "🧬 4. Nucleic Acid Assay (LAMP/RPA)"
 ])
+
 with tab1:
     col_left, col_right = st.columns([1, 1.35])
     with col_left:
