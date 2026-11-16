@@ -109,7 +109,7 @@ def _analyze_tube_roi(bgr_img: np.ndarray, roi_mask: np.ndarray, assay_mode: str
     mean_cos = float(np.mean(np.cos(angles_rad)))
     circular_hue_deg = (np.rad2deg(np.arctan2(mean_sin, mean_cos)) + 360.0) % 360.0
 
-    # CIELAB a* and b* shifted from OpenCV [0, 255] to standard [-128, +127]
+    # CIELAB a* and b* shifted from OpenCV to standard [-128, +127]
     cielab_a = float(np.mean(a_ch[valid_liquid_mask].astype(np.float32) - 128.0))
     cielab_b = float(np.mean(b_ch[valid_liquid_mask].astype(np.float32) - 128.0))
 
@@ -118,12 +118,10 @@ def _analyze_tube_roi(bgr_img: np.ndarray, roi_mask: np.ndarray, assay_mode: str
 
     # Calibrated logistic probability score (rule-based pipeline calibration)
     if assay_mode == "Colorimetric LAMP (Phenol Red)":
-        # Positive yellow has high +b* (typically > +35); Phenol Red negative has low/negative b*
         logit = (cielab_b - 28.0) / 8.5
         prob_pos = 1.0 / (1.0 + np.exp(-np.clip(logit, -20, 20)))
         est_copies = 0.0 if prob_pos < 0.5 else float(np.clip(10 ** (1.5 + (cielab_b - 20.0) / 22.0), 10.0, 1e6))
     else:
-        # Fluorescent RPA relies on green channel intensity
         logit = (g_channel_au - 115.0) / 22.0
         prob_pos = 1.0 / (1.0 + np.exp(-np.clip(logit, -20, 20)))
         est_copies = 0.0 if prob_pos < 0.5 else float(np.clip(10 ** (1.5 + (g_channel_au - 95.0) / 55.0), 10.0, 1e6))
@@ -223,3 +221,6 @@ def render_nucleic_acid_tab(min_conf_req=75, illumination_shift=0, sensor_noise_
         tube_bgr, roi_mask = _extract_center_roi_from_upload(bgr_raw)
         is_real_upload = True
     else:
+        effective_cond = (
+            "Negative Control — NTC (No-Template Control)"
+            if (input_source == "Rule-Based Synthetic Tube" and reaction_min < 15)
