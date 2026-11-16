@@ -1,165 +1,225 @@
 import streamlit as st
 import cv2
 import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from PIL import Image
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import precision_recall_fscore_support
 
-def generate_synthetic_tube(assay_type, sample_state, illumination_shift, noise_sigma, seed=42):
-    np.random.seed(seed)
-    img = np.zeros((320, 320, 3), dtype=np.uint8)
-    if "Fluorescent" in assay_type:
-        img[:] = (18, 22, 28)
-    else:
-        img[:] = (225, 228, 232)
 
-    if "Colorimetric" in assay_type:
-        if sample_state == "Positive (Target Detected)":
-            liquid_color = (30, 195, 245)
-        elif sample_state == "Negative (No Target)":
-            liquid_color = (115, 45, 195)
-        else:
-            liquid_color = (75, 125, 225)
-    else:
-        if sample_state == "Positive (Target Detected)":
-            liquid_color = (65, 235, 50)
-        elif sample_state == "Negative (No Target)":
-            liquid_color = (35, 65, 35)
-        else:
-            liquid_color = (50, 145, 45)
+def _generate_synthetic_tube(condition: str, assay_mode: str, illum_shift: int, noise_sigma: int):
+    """Generates a rule-based synthetic assay tube image (320x440 BGR) and ground-truth parameters."""
+    h, w = 440, 320
+    bg = np.full((h, w, 3), (242, 245, 248), dtype=np.uint8)
 
-    cv2.rectangle(img, (115, 60), (205, 220), liquid_color, -1)
-    cv2.circle(img, (160, 220), 45, liquid_color, -1)
-    border_color = (90, 95, 100) if "Fluorescent" in assay_type else (150, 155, 160)
-    cv2.rectangle(img, (115, 50), (205, 220), border_color, 2)
-    cv2.ellipse(img, (160, 220), (45, 45), 0, 0, 180, border_color, 2)
-    cv2.ellipse(img, (160, 60), (45, 8), 0, 0, 360, (255, 255, 255), -1)
-    cv2.ellipse(img, (133, 145), (6, 48), 0, 0, 360, (255, 255, 255), -1)
+    # Tube geometry
+    x1, x2 = 105, 215
+    y_top, y_liq_top, y_bot = 55, 165, 365
+    cx = (x1 + x2) // 2
+    radius = (x2 - x1) // 2
 
-    img = np.clip(img.astype(np.int16) + illumination_shift, 0, 255).astype(np.uint8)
+    # Build binary mask strictly for the liquid ROI inside the tube
+    roi_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.rectangle(roi_mask, (x1 + 5, y_liq_top + 6), (x2 - 5, y_bot - radius), 255, -1)
+    cv2.circle(roi_mask, (cx, y_bot - radius), radius - 5, 255, -1)
+
+    # Liquid color in BGR based on assay mode and sample condition
+    if assay_mode == "Colorimetric LAMP (Phenol Red)":
+        if condition == "Positive (Target Detected)":
+            liquid_bgr = (35, 215, 245)       # Bright yellow (~52 deg hue, high +b*)
+            true_copies = 10000.0
+        elif condition == "Low-Copy Near LoD (100 copies/µL)":
+            liquid_bgr = (75, 175, 240)       # Amber-orange transition (~38 deg hue)
+            true_copies = 100.0
+        else:  # Negative / NTC (No-Template Control)
+            liquid_bgr = (125, 65, 225)       # Phenol red pink-magenta (~335 deg hue)
+            true_copies = 0.0
+    else:  # Fluorescent RPA (SYBR Green / FAM)
+        bg = np.full((h, w, 3), (24, 28, 34), dtype=np.uint8)
+        if condition == "Positive (Target Detected)":
+            liquid_bgr = (75, 245, 65)        # Strong green fluorescence
+            true_copies = 10000.0
+        elif condition == "Low-Copy Near LoD (100 copies/µL)":
+            liquid_bgr = (55, 155, 50)        # Moderate green fluorescence
+            true_copies = 100.0
+        else:  # Negative / NTC
+            liquid_bgr = (35, 65, 38)         # Low background auto-fluorescence
+            true_copies = 0.0
+
+    img = bg.copy()
+    # Draw glass/polypropylene tube outline
+    cv2.rectangle(img, (x1, y_top), (x2, y_bot - radius), (185, 195, 205), 2)
+    cv2.ellipse(img, (cx, y_bot - radius), (radius, radius), 0, 0, 180, (185, 195, 205), 2)
+    cv2.ellipse(img, (cx, y_top), (radius, 10), 0, 0, 360, (165, 175, 185), 2)
+
+    # Fill liquid ROI
+    img[roi_mask == 255] = liquid_bgr
+
+    # Add realistic specular reflection highlight strictly inside the tube wall/meniscus
+    glare_overlay = np.zeros_like(img)
+    cv2.rectangle(glare_overlay, (x1 + 12, y_liq_top + 14), (x1 + 21, y_bot - radius - 10), (255, 255, 255), -1)
+    cv2.ellipse(glare_overlay, (cx, y_liq_top + 4), (radius - 8, 5), 0, 0, 360, (245, 248, 252), -1)
+    img = cv2.addWeighted(img, 1.0, glare_overlay, 0.78, 0)
+
+    # Apply illumination shift and Gaussian sensor noise
+    img_float = img.astype(np.float32) + float(illum_shift)
     if noise_sigma > 0:
-        noise = np.random.normal(0, noise_sigma, img.shape)
-        img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-    return img
+        rng = np.random.default_rng(42)
+        noise = rng.normal(0, noise_sigma * 1.5, img_float.shape)
+        img_float += noise
+    img_final = np.clip(img_float, 0, 255).astype(np.uint8)
 
-def analyze_tube_image(img_bgr, assay_type, confidence_gate):
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    h, s, v = cv2.split(hsv)
-    _, a_chan, b_chan = cv2.split(lab)
+    return img_final, roi_mask, true_copies
 
-    glare_mask = ((v > 220) & (s < 45)).astype(np.uint8) * 255
-    roi_mask = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
-    cv2.rectangle(roi_mask, (118, 65), (202, 220), 255, -1)
-    cv2.circle(roi_mask, (160, 220), 42, 255, -1)
 
-    active_mask = cv2.bitwise_and(roi_mask, cv2.bitwise_not(glare_mask))
-    valid_pixels = active_mask > 0
-    if np.sum(valid_pixels) == 0:
-        return None
+def _extract_center_roi_from_upload(bgr_img: np.ndarray):
+    """Resizes uploaded photo and extracts a centered tube ROI mask."""
+    resized = cv2.resize(bgr_img, (320, 440), interpolation=cv2.INTER_AREA)
+    h, w = resized.shape[:2]
+    roi_mask = np.zeros((h, w), dtype=np.uint8)
+    # Central vertical tube window (excluding outer background)
+    cv2.rectangle(roi_mask, (115, 140), (205, 340), 255, -1)
+    return resized, roi_mask
 
-    glare_ratio = (np.sum((glare_mask > 0) & (roi_mask > 0)) / np.sum(roi_mask > 0)) * 100
-    mean_hue = float(np.mean(h[valid_pixels]))
-    mean_a = float(np.mean(a_chan[valid_pixels])) - 128.0
-    mean_b = float(np.mean(b_chan[valid_pixels])) - 128.0
-    green_intensity = float(np.mean(img_bgr[:, :, 1][valid_pixels]))
 
-    if "Colorimetric" in assay_type:
-        score = np.clip((mean_b + 20) / 70.0, 0.0, 1.0)
-        if score >= 0.65:
-            raw_decision = "POSITIVE (Target Detected)"
-            confidence = 75.0 + (score - 0.65) * 70.0
-        elif score <= 0.35:
-            raw_decision = "NEGATIVE (No Target)"
-            confidence = 75.0 + (0.35 - score) * 70.0
-        else:
-            raw_decision = "INCONCLUSIVE (Low Signal)"
-            confidence = 55.0 + abs(score - 0.5) * 40.0
+def _analyze_tube_roi(bgr_img: np.ndarray, roi_mask: np.ndarray, assay_mode: str, conf_gate: float):
+    """Computes ROI-restricted glare mask, circular hue (0-360), CIELAB b*/a*, and calibrated confidence."""
+    hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2LAB)
+
+    h_ch, s_ch, v_ch = cv2.split(hsv)
+    _, a_ch, b_ch = cv2.split(lab)
+
+    # Specular glare detection strictly inside the liquid ROI (excludes white/dark background)
+    glare_in_roi = ((v_ch > 220) & (s_ch < 45) & (roi_mask == 255)).astype(np.uint8) * 255
+    valid_liquid_mask = ((roi_mask == 255) & (glare_in_roi == 0))
+
+    total_roi_px = max(int(np.sum(roi_mask == 255)), 1)
+    glare_px = int(np.sum(glare_in_roi == 255))
+    glare_pct = (glare_px / total_roi_px) * 100.0
+
+    if np.sum(valid_liquid_mask) < 20:
+        valid_liquid_mask = (roi_mask == 255)
+
+    # Circular mean hue in standard 0 - 360 degree scale (OpenCV H is 0 - 179)
+    angles_rad = np.deg2rad(h_ch[valid_liquid_mask].astype(np.float32) * 2.0)
+    mean_sin = float(np.mean(np.sin(angles_rad)))
+    mean_cos = float(np.mean(np.cos(angles_rad)))
+    circular_hue_deg = (np.rad2deg(np.arctan2(mean_sin, mean_cos)) + 360.0) % 360.0
+
+    # CIELAB a* and b* shifted from OpenCV [0, 255] to standard [-128, +127]
+    cielab_a = float(np.mean(a_ch[valid_liquid_mask].astype(np.float32) - 128.0))
+    cielab_b = float(np.mean(b_ch[valid_liquid_mask].astype(np.float32) - 128.0))
+
+    # Green channel fluorescence intensity (relevant only for Fluorescent RPA)
+    g_channel_au = float(np.mean(bgr_img[:, :, 1][valid_liquid_mask]))
+
+    # Calibrated logistic probability score (rule-based pipeline calibration)
+    if assay_mode == "Colorimetric LAMP (Phenol Red)":
+        # Positive yellow has high +b* (typically > +35); Phenol Red negative has low/negative b*
+        logit = (cielab_b - 28.0) / 8.5
+        prob_pos = 1.0 / (1.0 + np.exp(-np.clip(logit, -20, 20)))
+        est_copies = 0.0 if prob_pos < 0.5 else float(np.clip(10 ** (1.5 + (cielab_b - 20.0) / 22.0), 10.0, 1e6))
     else:
-        score = np.clip((green_intensity - 55.0) / 160.0, 0.0, 1.0)
-        if score >= 0.60:
-            raw_decision = "POSITIVE (Target Detected)"
-            confidence = 78.0 + (score - 0.60) * 55.0
-        elif score <= 0.30:
-            raw_decision = "NEGATIVE (No Target)"
-            confidence = 78.0 + (0.30 - score) * 55.0
-        else:
-            raw_decision = "INCONCLUSIVE (Low Signal)"
-            confidence = 58.0 + abs(score - 0.45) * 40.0
+        # Fluorescent RPA relies on green channel intensity
+        logit = (g_channel_au - 115.0) / 22.0
+        prob_pos = 1.0 / (1.0 + np.exp(-np.clip(logit, -20, 20)))
+        est_copies = 0.0 if prob_pos < 0.5 else float(np.clip(10 ** (1.5 + (g_channel_au - 95.0) / 55.0), 10.0, 1e6))
 
-    confidence = min(99.4, round(confidence, 1))
+    confidence_pct = float(max(prob_pos, 1.0 - prob_pos) * 100.0)
 
-    if confidence < confidence_gate or "INCONCLUSIVE" in raw_decision:
-        final_status = "INCONCLUSIVE — Human-in-the-Loop Review Required"
-        status_type = "warning"
-    elif "POSITIVE" in raw_decision:
-        final_status = f"ALERT: {raw_decision}"
-        status_type = "error"
+    if confidence_pct < conf_gate:
+        decision = "INCONCLUSIVE (Below Confidence Gate — Manual Review)"
+        status_color = "#b45309"
+        bg_tint = "rgba(245, 158, 11, 0.14)"
+    elif prob_pos >= 0.5:
+        decision = "POSITIVE (Target Signal Detected)"
+        status_color = "#dc2626"
+        bg_tint = "rgba(220, 38, 38, 0.14)"
     else:
-        final_status = f"PASS: {raw_decision}"
-        status_type = "success"
+        decision = "NEGATIVE / NTC (No Target Amplification)"
+        status_color = "#15803d"
+        bg_tint = "rgba(21, 128, 61, 0.14)"
 
     return {
-        "active_mask": active_mask,
-        "glare_mask": glare_mask,
-        "glare_ratio": round(glare_ratio, 2),
-        "mean_hue": round(mean_hue, 2),
-        "mean_a": round(mean_a, 2),
-        "mean_b": round(mean_b, 2),
-        "green_intensity": round(green_intensity, 1),
-        "confidence": confidence,
-        "final_status": final_status,
-        "status_type": status_type,
-        "est_concentration": round(score * 10**4, 1)
+        "circular_hue_deg": circular_hue_deg,
+        "cielab_a": cielab_a,
+        "cielab_b": cielab_b,
+        "glare_pct": glare_pct,
+        "g_channel_au": g_channel_au,
+        "prob_pos": prob_pos,
+        "confidence_pct": confidence_pct,
+        "est_copies": est_copies,
+        "decision": decision,
+        "status_color": status_color,
+        "bg_tint": bg_tint,
+        "roi_mask": roi_mask,
+        "glare_mask": glare_in_roi,
     }
 
-def render_nucleic_acid_tab():
-    st.subheader("🧬 Portable Nucleic Acid Assay Analyzer (LAMP / RPA)")
-    col_ctrl, col_img, col_res = st.columns([1.1, 1.2, 1.5])
+
+def render_nucleic_acid_tab(min_conf_req=75, illumination_shift=0, sensor_noise_lvl=4, *args, **kwargs):
+    st.subheader("🧪 Portable Nucleic Acid Assay Analyzer (LAMP / RPA)")
+    st.caption(
+        "Research prototype for optical colorimetry & fluorescence extraction — not a clinical diagnostic device. "
+        "Sidebar illumination, noise, and confidence gate controls apply directly to this module."
+    )
+
+    col_ctrl, col_img, col_res = st.columns([1.05, 1.0, 1.25], gap="medium")
 
     with col_ctrl:
-        st.markdown("#### Assay & Optical Controls")
-        assay_type = st.radio(
-            "Select Assay Detection Mode",
-            ["Colorimetric LAMP (Phenol Red)", "Fluorescent RPA (SYBR Green / FAM)"]
+        st.markdown("#### 1. Assay & Input Source")
+        assay_mode = st.radio(
+            "Assay Detection Mode",
+            ["Colorimetric LAMP (Phenol Red)", "Fluorescent RPA (SYBR Green / FAM)"],
+            key="na_assay_mode",
         )
-        sample_state = st.selectbox(
-            "Simulated Sample Condition",
-            ["Positive (Target Detected)", "Negative (No Target)", "Borderline / Low Concentration"]
+
+        input_source = st.radio(
+            "Image Input Source",
+            ["Rule-Based Synthetic Tube", "Upload Real Tube Photo (JPG / PNG)"],
+            key="na_input_source",
         )
-        conf_gate = st.slider("Human-in-the-Loop Confidence Gate (%)", 50, 95, 75)
-        illum_shift = st.slider("Chamber Illumination Shift (Brightness)", -60, 60, 0)
-        noise_sigma = st.slider("Optical Sensor Noise (Sigma)", 0, 25, 4)
 
-    img_bgr = generate_synthetic_tube(assay_type, sample_state, illum_shift, noise_sigma)
-    results = analyze_tube_image(img_bgr, assay_type, conf_gate)
+        uploaded_tube = None
+        sample_condition = "Positive (Target Detected)"
+        reaction_min = 30
 
-    with col_img:
-        st.markdown("#### Optical Tube Capture")
-        st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), caption="Simulated Assay Tube", use_container_width=True)
-        m1, m2 = st.columns(2)
-        with m1:
-            st.image(results["active_mask"], caption="Active Liquid Mask", use_container_width=True)
-        with m2:
-            st.image(results["glare_mask"], caption="Glare Map (V>220, S<45)", use_container_width=True)
-
-    with col_res:
-        st.markdown("#### Quantitative Signal & Decision")
-        if results["status_type"] == "success":
-            st.success(f"**Decision:** {results['final_status']} | **Confidence:** {results['confidence']}%")
-        elif results["status_type"] == "warning":
-            st.warning(f"**Decision:** {results['final_status']} | **Confidence:** {results['confidence']}%")
+        if input_source == "Rule-Based Synthetic Tube":
+            sample_condition = st.selectbox(
+                "Control / Sample Condition",
+                [
+                    "Positive (Target Detected)",
+                    "Low-Copy Near LoD (100 copies/µL)",
+                    "Negative Control — NTC (No-Template Control)",
+                ],
+                key="na_sample_cond",
+            )
+            reaction_min = st.slider(
+                "Simulated Incubation Time (min)",
+                min_value=0,
+                max_value=45,
+                value=30,
+                step=5,
+                key="na_time_min",
+            )
+            if reaction_min < 15 and sample_condition != "Negative Control — NTC (No-Template Control)":
+                st.caption("⏱ Early reaction window (<15 min): amplification color shift is still developing.")
         else:
-            st.error(f"**Decision:** {results['final_status']} | **Confidence:** {results['confidence']}%")
+            uploaded_tube = st.file_uploader(
+                "Upload Tube / Colored Solution Image",
+                type=["jpg", "jpeg", "png"],
+                key="na_tube_uploader",
+                help="Supports smartphone photos of assay tubes or non-biological pH/dye validation tubes.",
+            )
+            st.caption("Non-biological validation mode: test with colored water / pH indicator + gray card.")
 
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Circular Hue", f"{results['mean_hue']}°", "Scale: 0-179")
-        k2.metric("CIELAB b* (Yellow)", f"{results['mean_b']}", f"a*: {results['mean_a']}")
-        k3.metric("Specular Glare", f"{results['glare_ratio']}%", "Filtered Out")
-
-        k4, k5 = st.columns(2)
-        k4.metric("Fluorescence (G-Ch)", f"{results['green_intensity']} AU")
-        k5.metric("Est. Target Load", f"{results['est_concentration']} cp/µL")
-
-        st.info(
-            "**Opto-Lab Robustness Note:** Meniscus and tube specular reflections are automatically "
-            "masked out via `V>220, S<45` thresholding, ensuring reliable spectral and fluorescence "
-            "quantification from the remaining liquid region of interest."
-        )
+    # Obtain image and ROI mask
+    if input_source == "Upload Real Tube Photo (JPG / PNG)" and uploaded_tube is not None:
+        pil_img = Image.open(uploaded_tube).convert("RGB")
+        bgr_raw = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        tube_bgr, roi_mask = _extract_center_roi_from_upload(bgr_raw)
+        is_real_upload = True
+    else:
