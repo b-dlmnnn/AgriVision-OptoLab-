@@ -155,11 +155,11 @@ def render_nucleic_acid_tab(min_conf_req=75, illumination_shift=0, sensor_noise_
         st.markdown("#### 3. Quantitative Signal & Decision")
         st.markdown(f"""<div style="padding:12px;border-radius:8px;background:{metrics.get('bg_tint')};border-left:4px solid {metrics.get('status_color')};margin-bottom:10px;"><b style="color:{metrics.get('status_color')};">{metrics.get('decision')}</b><br><small>Calibrated Confidence: <b>{metrics.get('confidence_pct'):.1f}%</b> (Gate: {min_conf_req}%) · P(Pos): <b>{metrics.get('prob_pos'):.3f}</b></small></div>""", unsafe_allow_html=True)
         c1, c2 = st.columns(2)
-        c1.metric("Circular Hue (0°–360°)", f"{metrics.get('circular_hue_deg'):.1f}°", "Yellow LAMP ≈ 45°–58°")
-        c1.metric("Specular Glare (Tube ROI)", f"{metrics.get('glare_pct'):.2f}%", "Filtered V>220, S<45")
-        c2.metric("CIELAB b* (Yellow-Blue)", f"{metrics.get('cielab_b'):+.2f}", f"a*: {metrics.get('cielab_a'):+.2f}")
+        c1.metric("Circular Hue", f"{metrics.get('circular_hue_deg'):.1f}°", "Yellow ≈ 45–60°")
+        c1.metric("Specular Glare", f"{metrics.get('glare_pct'):.2f}%", "Filtered V>220")
+        c2.metric("CIELAB b* (Yellow)", f"{metrics.get('cielab_b'):+.2f}", f"a*: {metrics.get('cielab_a'):+.2f}")
         est_c = metrics.get("est_copies", 0.0)
-        c2.metric("Est. Target Concentration", "0 (NTC)" if est_c == 0 else f"{est_c:,.0f} copies/µL", "Log-linear calibration")
+        c2.metric("Est. Conc. (copies/µL)", "0 (NTC)" if est_c == 0 else f"{est_c:,.0f}")
         if assay_mode == "Fluorescent RPA (SYBR Green / FAM)":
             st.metric("Fluorescence Intensity (G-Ch)", f"{metrics.get('g_channel_au'):.1f} AU", "Fluorescent RPA mode")
         if is_real_upload:
