@@ -11,21 +11,21 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix
 from nucleic_acid_module import render_nucleic_acid_tab
 
-st.set_page_config(page_title="AgriVision OptoLab | Smart Agriculture Quality & IoT", page_icon="🌱", layout="wide")
+st.set_page_config(page_title="Agri-Optics & Biosensor Lab", page_icon="🌱", layout="wide")
 
-st.sidebar.header("⚙️ Opto-Lab Control Panel")
-max_blemish_tol = st.sidebar.slider("Max Export Blemish Tolerance (%) [Configurable]", 1.0, 15.0, 4.5, 0.5)
-min_conf_req = st.sidebar.slider("Human-in-the-Loop Confidence Gate (%)", 50, 95, 75, 5)
+st.sidebar.header("⚙️ Settings & Thresholds")
+max_blemish_tol = st.sidebar.slider("Max Blemish Limit (%)", 1.0, 15.0, 4.5, 0.5)
+min_conf_req = st.sidebar.slider("Confidence Threshold (%)", 50, 95, 75, 5)
 
-st.sidebar.subheader("🔦 Optical Robustness Perturbation")
-illumination_shift = st.sidebar.slider("Chamber Illumination Shift (Brightness)", -40, 40, 0, 5)
-sensor_noise_lvl = st.sidebar.slider("Optical Sensor Noise (Sigma)", 0, 20, 4, 2)
+st.sidebar.subheader("🔦 Image Noise & Lighting Test")
+illumination_shift = st.sidebar.slider("Brightness Shift", -40, 40, 0, 5)
+sensor_noise_lvl = st.sidebar.slider("Gaussian Noise (Sigma)", 0, 20, 4, 2)
 
 st.sidebar.markdown("---")
-st.sidebar.info("**Academic Transparency Note:** This prototype uses physics-informed synthetic optical chamber images and simulated IoT sensor streams to validate the computer vision and grading pipeline prior to physical hardware deployment.")
+st.sidebar.info("**Note:** Using synthetic images and simulated sensor data to test the OpenCV pipeline before connecting real camera hardware.")
 
-st.title("🌱 AgriVision OptoLab: Opto-Mechatronic Agricultural Quality & IoT System")
-st.markdown("**Automated Optical Grading, Specular Reflection Filtering & IoT Telemetry Prototype** — Designed for Smart Agriculture & Biomechatronic Research.")
+st.title("🌱 Agri-Optics & Biosensor Lab")
+st.markdown("**OpenCV image analysis and IoT telemetry testbed** — Designed for Smart Agriculture & Biomechatronic Research.")
 
 def generate_produce_sample(sample_type="Fresh Grade A", seed=42, hard_boundary=False):
     rng = np.random.default_rng(seed)
@@ -139,16 +139,16 @@ def train_quality_model():
     return clf, accuracy_score(y_test, y_pred), df.columns.tolist(), cm, classes
 model, model_acc, feature_names, conf_mat, class_labels = train_quality_model()
 tab1, tab4, tab2, tab3 = st.tabs([
-    "🔬 1. Optical Produce Quality Inspection",
-    "🧬 2. Nucleic Acid Assay (LAMP/RPA)",
-    "📡 3. IoT & Biological Sensor Telemetry",
+    "🔬 1. Produce Grading",
+    "🧬 2. LAMP/RPA Assay",
+    "📡 3. Sensor Telemetry",
     "📊 4. Model Validation & Confusion Matrix"
 ])
 
 with tab1:
     col_left, col_right = st.columns([1, 1.35])
     with col_left:
-        st.subheader("Image Acquisition & Robustness Test")
+        st.subheader("Input & Test Settings")
         input_mode = st.radio("Select Input Source:", ["Simulated Optical Chamber Sample", "Upload Custom Produce Image"], horizontal=True)
         if input_mode == "Simulated Optical Chamber Sample":
             selected_sample = st.selectbox("Select Conveyor Test Sample:", ["Fresh Grade A", "Surface Blemish (Grade B)", "Unripe / Early Harvest", "Defective / Fungal Rot"])
@@ -169,7 +169,7 @@ with tab1:
         st.image(cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB), caption=f"Chamber Capture (Illumination Shift: {illumination_shift:+d}, Noise: {sensor_noise_lvl})", use_container_width=True)
 
     with col_right:
-        st.subheader("Automated Optical Feature & Grade Analysis")
+        st.subheader("Image Analysis Results")
         feats, clean_mask, spec_mask, spec_pct = extract_optical_features(bgr_image)
         input_df = pd.DataFrame([feats])[feature_names]
         pred_class = str(model.predict(input_df)[0])
@@ -199,8 +199,8 @@ with tab1:
         m4.metric("Edge Density", f"{feats['texture_edge_density']}%")
 
         v1, v2 = st.columns(2)
-        v1.image(clean_mask, caption="Active Analysis Mask (Background & Glare Removed)", use_container_width=True)
-        v2.image(spec_mask, caption="Filtered Specular Highlight Map (V>220, S<45)", use_container_width=True)
+        v1.image(clean_mask, caption="Processed Mask (No Background/Glare)", use_container_width=True)
+        v2.image(spec_mask, caption="Glare Filter Map (HSV: V>220, S<45)", use_container_width=True)
 
         prob_df = pd.DataFrame({"Quality Class": model.classes_, "Probability (%)": np.round(pred_probs * 100, 2)})
         fig_prob = px.bar(prob_df, x="Quality Class", y="Probability (%)", color="Quality Class", title="Calibrated Classifier Probability Distribution")
